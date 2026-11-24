@@ -1,0 +1,12 @@
+
+# Ignore specific folders
+node_modules/
+
+# Ignore specific files
+.env
+.env.local
+
+
+# Ignore file extensions anywhere in the project
+*.log
+*.ds_store
