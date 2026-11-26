@@ -19,7 +19,8 @@ CREATE TABLE locations (
     loc_coordinates_long DOUBLE PRECISION NOT NULL,
     loc_permissions      TEXT,
     loc_imgs             TEXT,
-    loc_owner_type       TEXT
+    loc_owner_type       TEXT,
+    created_by           UUID NOT NULL REFERENCES users(user_id) ON DELETE NULL
 );
 
 CREATE TABLE location_hours (
@@ -77,3 +78,5 @@ CREATE TABLE reviews (
     rev_imgs  TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now() --option to leave new rev after certain time has passed
 );
+
+CREATE INDEX idx_location_tags_tag_id ON location_tags(tag_id);
