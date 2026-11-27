@@ -12,12 +12,12 @@ const UUID_RE =
 
 // both get /loc and /loc/:id return same
 //tags LEFT JOIN w/loc_tags to keep locations w/o tags
-//coalesce = returns empty rather than null, FILTER drops null for tagless and GROUP BY 1 - selects 1
-const SELECT_LOCATION = `SELECT 1.*,
+//coalesce = returns empty rather than null, FILTER drops null for tagless and GROUP BY l - selects l
+const SELECT_LOCATION = `SELECT l.*,
     COALESCE(array_agg(t.tag_name ORDER BY t.tag_name) 
         FILTER (WHERE t.tag_id IS NOT NULL), '{}') AS tags
-    FROM locations 1
-    LEFT JOIN location_tags lt ON lt.loc_id
+    FROM locations l
+    LEFT JOIN location_tags lt ON lt.loc_id = l.loc_id
     LEFT JOIN tags t ON t.tag_id = lt.tag_id`;
 
 //POST /loc create protected route
@@ -48,8 +48,8 @@ router.post("/", requireAuth, async (req, res) => {
     lat < -90 ||
     lat > 90 ||
     !Number.isFinite(long) ||
-    long < -90 ||
-    long > 90
+    long < -180 ||
+    long > 180
   ) {
     return res
       .status(400)
@@ -85,10 +85,10 @@ router.post("/", requireAuth, async (req, res) => {
     }
 
     //location tags links written as one all or nothing
-    const locID = await withTransaction(async (client) => {
+    const locId = await withTransaction(async (client) => {
       const { rows } = await client.query(
         `INSERT INTO locations
-                (loc_name, loc_desc, loc_addressm loc_phone, loc_is_power, loc_categories, loc_coordinates_lat, loc_coordinates_long, loc_permissions, loc_imgs,
+                (loc_name, loc_desc, loc_address, loc_phone, loc_is_power, loc_categories, loc_coordinates_lat, loc_coordinates_long, loc_permissions, loc_imgs,
             loc_owner_type, created_by)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
             RETURNING loc_id`,
@@ -167,7 +167,7 @@ router.get("/", async (req, res) => {
   }
   if (tag) {
     where.push(`EXISTS (
-        SELECT 1 FROM location_tags lt2
+        SELECT l FROM location_tags lt2
         JOIN tags t2 ON t2.tag_id = lt2.tag_id
         WHERE lt2.loc_id = l.loc_id AND t2.tag_name = ${add(tag.toLowerCase())})`);
   }
