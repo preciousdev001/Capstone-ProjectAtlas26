@@ -20,7 +20,7 @@ CREATE TABLE locations (
     loc_permissions      TEXT,
     loc_imgs             TEXT,
     loc_owner_type       TEXT,
-    created_by           UUID NOT NULL REFERENCES users(user_id) ON DELETE NULL
+    created_by           UUID NOT NULL REFERENCES users(user_id) ON DELETE SET NULL
 );
 
 CREATE TABLE location_hours (
@@ -43,7 +43,7 @@ CREATE TABLE lists (
 
 CREATE TABLE tags (
     tag_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tag_name    TEXT NOT NULL UNIQUE,
+    tag_name    TEXT NOT NULL UNIQUE
 );
 
 CREATE TABLE list_locations (

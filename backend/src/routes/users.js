@@ -3,7 +3,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const { pool } = require("../db/db");
 
-const router = express.Router;
+const router = express.Router();
 
 //if email doesnt exit - hacker can time reesponses and discover which emails are registered - dummy has events out timing
 
@@ -57,6 +57,7 @@ router.post("/", async (req, res) => {
       `INSERT INTO users (user_name, user_email, user_password, user_is_business, user_prof_img) 
         VALUES ($1, $2, $3, $4, $5)
         RETURNING user_name, user_email, user_password, user_is_business, user_prof_img`,
+      //check if user pass is correct in that case
       [user_name.trim(), user_email, hash, user_is_business, user_prof_img],
     );
     res.status(201).json(rows[0]);
@@ -66,7 +67,7 @@ router.post("/", async (req, res) => {
       return res.status(409).json({ error: "Username or email already taken" });
     }
     console.error(err);
-    res.statis(500).json({ error: "Server error" });
+    res.status(500).json({ error: "Server error" });
   }
 });
 
