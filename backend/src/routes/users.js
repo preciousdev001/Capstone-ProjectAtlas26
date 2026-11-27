@@ -69,3 +69,49 @@ router.post("/", async (req, res) => {
     res.statis(500).json({ error: "Server error" });
   }
 });
+
+//POST /users/login
+router.post("/login", async (req, res) => {
+  const user_email =
+    typeof req.body.user_email === "string"
+      ? req.body.user_email.trim().toLowerCase()
+      : "";
+
+  const { password } = req.body;
+
+  if (!user_email || typeof password !== "string") {
+    return res
+      .status(400)
+      .json({ error: "user_email and password are required" });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT user_id, user_password FROM users WHERE user_email = $1`,
+      [user_email],
+    );
+
+    const user = rows[0];
+
+    //safety check runs bcrypt, real or dummy hash
+    const ok = await bcrypt.compare(
+      password,
+      user ? user.user_password : DUMMY_HASH,
+    );
+
+    //error msg if fail, w/o mentioning what the cause is for potential hacker
+    if (!user || !ok)
+      return res.status(401).json({ error: "Invalid email or password" });
+
+    // token holds user_id only, signature proves nonaltered but anyone can access jwt
+    const token = jwt.sign({ user_id: user.user_id }, process.env.JWT_SECRET, {
+      expiresIn: "7d",
+    });
+    res.json({ token });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+module.exports = router;
