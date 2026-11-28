@@ -15,7 +15,7 @@ const MAX_TAGS = 10; //prevents 1 req from creating 100s tags
 
 // both get /loc and /loc/:id return same
 //tags LEFT JOIN w/loc_tags to keep locations w/o tags
-//coalesce = returns empty rather than null, FILTER drops null for tagless and GROUP BY l - selects l
+//coalesce = returns empty rather than null, FILTER drops null for tagless
 const SELECT_LOCATION = `SELECT l.*,
     COALESCE(array_agg(t.tag_name ORDER BY t.tag_name) 
         FILTER (WHERE t.tag_id IS NOT NULL), '{}') AS tags
@@ -83,7 +83,7 @@ router.post("/", requireAuth, async (req, res) => {
     loc_imgs,
     loc_owner_type,
     tags = [],
-  } = req.body;
+  } = req.body ?? {};
 
   if (!loc_name || !loc_address) {
     return res.status(400).json({ error: "loc_name and loc_address require" });
@@ -103,20 +103,13 @@ router.post("/", requireAuth, async (req, res) => {
       .status(400)
       .json({ error: "valid latitude and longitude are required" });
   }
-  if (
-    !Array.isArray(tags) ||
-    tags.length > MAX_TAGS ||
-    tags.some((t) => typeof t !== "string")
-  ) {
+  //   normalize does both what old one did the array and new set - null is invalid
+  const cleanTags = normalizeTags(tags);
+  if (cleanTags === null) {
     return res
       .status(400)
       .json({ error: `tags must be an array of up to ${MAX_TAGS} strings` });
   }
-
-  //trim and lowercase all to make sure no dupes
-  const cleanTags = [
-    ...new Set(tags.map((t) => t.trim().toLowerCase()).filter(Boolean)),
-  ];
 
   try {
     if (ONLY_BUSINESS_CAN_CREATE) {
@@ -157,19 +150,8 @@ router.post("/", requireAuth, async (req, res) => {
       );
       const newId = rows[0].loc_id;
 
-      for (const tag of cleanTags) {
-        //create tag if new or just reuse
-        const t = await client.query(
-          `INSERT INTO tags (tag_name) VALUES ($1)
-                ON CONFLICT (tag_name) DO UPDATE SET tag_name = EXCLUDED.tag_name
-                RETURNING tag_id`,
-          [tag],
-        );
-        await client.query(
-          "INSERT INTO location_tags (loc_id, tag_id) VALUES ($1, $2)",
-          [newId, t.rows[0].tag_id],
-        );
-      }
+      await saveTags(client, newId, cleanTags);
+
       return newId;
     });
     //make sure res incl tags
@@ -215,7 +197,7 @@ router.get("/", async (req, res) => {
   }
   if (tag) {
     where.push(`EXISTS (
-        SELECT l FROM location_tags lt2
+        SELECT 1 FROM location_tags lt2
         JOIN tags t2 ON t2.tag_id = lt2.tag_id
         WHERE lt2.loc_id = l.loc_id AND t2.tag_name = ${add(tag.toLowerCase())})`);
   }
@@ -354,7 +336,7 @@ router.delete("/:id", requireAuth, async (req, res) => {
     //make sure all details of location are deleted
     await pool.query(
       "DELETE FROM locations WHERE loc_id = $1 AND created_by = $2",
-      [req.params.id, req.user.id],
+      [req.params.id, req.user.user_id],
     );
     res.status(204).end();
   } catch (err) {
