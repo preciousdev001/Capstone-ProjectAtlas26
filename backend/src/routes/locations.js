@@ -1,14 +1,17 @@
 const express = require("express");
 const { pool, withTransaction } = require("../db/db");
 const requireAuth = require("../middleware/auth");
+const { checkOwner, denyIfNotOwner } = require("../utils/ownership");
+const { buildUpdate } = require("../utils/buildUpdate");
+const { uuidParam } = require("../middleware/validateUuid");
 
 const router = express.Router();
+
+router.param("id", uuidParam);
 
 const ONLY_BUSINESS_CAN_CREATE = false;
 
 const MAX_TAGS = 10; //prevents 1 req from creating 100s tags
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // both get /loc and /loc/:id return same
 //tags LEFT JOIN w/loc_tags to keep locations w/o tags
@@ -19,6 +22,51 @@ const SELECT_LOCATION = `SELECT l.*,
     FROM locations l
     LEFT JOIN location_tags lt ON lt.loc_id = l.loc_id
     LEFT JOIN tags t ON t.tag_id = lt.tag_id`;
+
+const EDITABLE = [
+  "loc_name",
+  "loc_desc",
+  "loc_address",
+  "loc_phone",
+  "loc_is_power",
+  "loc_categories",
+  "loc_coordinates_lat",
+  "loc_coordinates_long",
+  "loc_permissions",
+  "loc_imgs",
+  "loc_owner_type",
+];
+
+const COORD_RANGES = [
+  ["loc_coordinates_lat", -90, 90],
+  ["loc_coordinates_long", -180, 180],
+];
+
+function normalizeTags(tags) {
+  if (
+    !Array.isArray(tags) ||
+    tags.length > MAX_TAGS ||
+    tags.some((t) => typeof t !== "string")
+  ) {
+    return null;
+  }
+  return [...new Set(tags.map((t) => t.trim().toLowerCase()).filter(Boolean))];
+}
+
+async function saveTags(client, locId, cleanTags) {
+  for (const tag of cleanTags) {
+    const t = await client.query(
+      `INSERT INTO tags (tag_name) VALUES ($1)
+            ON CONFLICT (tag_name) DO UPDATE SET tag_name = EXCLUDED.tag_name
+            RETURNING tag_id`,
+      [tag],
+    );
+    await client.query(
+      "INSERT INTO location_tags (loc_id, tag_id) VALUES ($1, $2)",
+      [locId, t.rows[0].tag_id],
+    );
+  }
+}
 
 //POST /loc create protected route
 router.post("/", requireAuth, async (req, res) => {
@@ -193,11 +241,6 @@ router.get("/", async (req, res) => {
 
 //GET /loc/:id :id turns to req.params.id hence /loc/abc123
 router.get("/:id", async (req, res) => {
-  // errors potentially
-  if (!UUID_RE.test(req.params.id)) {
-    return res.status(404).json({ error: "Location not found" });
-  }
-
   try {
     const { rows } = await pool.query(
       `${SELECT_LOCATION} WHERE l.loc_id = $1 GROUP BY l.loc_id`,
@@ -206,6 +249,114 @@ router.get("/:id", async (req, res) => {
     //no matching row error
     if (!rows[0]) return res.status(404).json({ error: "Location not found" });
     res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+//PATCH /loc>:id - owner only
+router.patch("/:id", requireAuth, async (req, res) => {
+  const body = req.body ?? {};
+
+  for (const col of ["loc_name", "loc_address"]) {
+    if (body[col] !== undefined && !String(body[col]).trim()) {
+      return res.status(400).json({ error: `${col} cannot be empty` });
+    }
+  }
+  if (
+    body.loc_is_power !== undefined &&
+    typeof body.loc_is_power !== "boolean"
+  ) {
+    return res
+      .status(400)
+      .json({ error: "loc_is_power must be true or false" });
+  }
+  //   coodinates check
+  for (const [col, min, max] of COORD_RANGES) {
+    if (body[col] !== undefined) {
+      const n = body[col] === null ? NaN : Number(body[col]);
+      if (!Number.isFinite(n) || n < min || n > max) {
+        return res
+          .status(400)
+          .json({ error: `${col} must be between ${min} and ${max}` });
+      }
+      body[col] = n;
+    }
+  }
+  //tags check
+  const cleanTags =
+    body.tags === undefined ? undefined : normalizeTags(body.tags);
+
+  //null tags = invalid tags
+  if (cleanTags === null) {
+    return res
+      .status(400)
+      .json({ error: `tags must be an array of up to ${MAX_TAGS} strings` });
+  }
+
+  //  sets for avail fields
+  const { sets, params } = buildUpdate(body, EDITABLE);
+  //guard check
+  if (!sets.length && cleanTags === undefined) {
+    return res.status(400).json({ error: "No valid fields to update" });
+  }
+
+  try {
+    //auth and guard checks
+    const status = await checkOwner(
+      "location",
+      req.params.id,
+      req.user.user_id,
+    );
+    if (denyIfNotOwner(status, res, "Location")) return;
+
+    await withTransaction(async (client) => {
+      //update only if col changed
+      if (sets.length) {
+        await client.query(
+          `UPDATE locations SET ${sets.join(", ")}
+                WHERE loc_id = $${params.length + 1} AND created_by = $${params.length + 2}`,
+          [...params, req.params.id, req.user.user_id],
+        );
+      }
+      //replace whole set if new tags added
+      if (cleanTags !== undefined) {
+        await client.query("DELETE FROM location_tags WHERE loc_id = $1", [
+          req.params.id,
+        ]);
+        await saveTags(client, req.params.id, cleanTags);
+      }
+    });
+
+    //make sure res incl new tags
+    const { rows } = await pool.query(
+      `${SELECT_LOCATION} WHERE l.loc_id = $1 GROUP BY l.loc_id`,
+      [req.params.id],
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// DELETE /loc/:id - owner only
+router.delete("/:id", requireAuth, async (req, res) => {
+  try {
+    // guard and owner checks
+    const status = await checkOwner(
+      "location",
+      req.params.id,
+      req.user.user_id,
+    );
+    if (denyIfNotOwner(status, res, "Location")) return;
+    //make sure all details of location are deleted
+    await pool.query(
+      "DELETE FROM locations WHERE loc_id = $1 AND created_by = $2",
+      [req.params.id, req.user.id],
+    );
+    res.status(204).end();
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
