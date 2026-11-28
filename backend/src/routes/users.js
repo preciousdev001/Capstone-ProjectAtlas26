@@ -1,5 +1,5 @@
 const express = require("express");
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { pool } = require("../db/db");
 
@@ -56,7 +56,7 @@ router.post("/", async (req, res) => {
     const { rows } = await pool.query(
       `INSERT INTO users (user_name, user_email, user_password, user_is_business, user_prof_img) 
         VALUES ($1, $2, $3, $4, $5)
-        RETURNING user_name, user_email, user_password, user_is_business, user_prof_img`,
+        RETURNING user_id, user_name, user_email, user_is_business, user_prof_img`,
       //check if user pass is correct in that case
       [user_name.trim(), user_email, hash, user_is_business, user_prof_img],
     );
